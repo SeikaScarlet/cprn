@@ -1,7 +1,11 @@
 [project]
 name = "cprn"
 version = "0.1.0"
-description = "Add your description here"
+description = "CPRN gen app algo"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["cprn*"]
+exclude = ["jnb*"]

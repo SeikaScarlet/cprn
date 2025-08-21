@@ -148,11 +148,14 @@ class CprnTopoSearch:
 
                 # Check if the current node is a facility of the specified type
                 if DG.nodes[current_node].get('is_fac') and DG.nodes[current_node]['is_fac'] == True:
+                    log.info(f"traverse at {current_node} is fac") if verbose else ''
                     # 新代码: 精确过滤指定类型的设施
                     df_fac_attr = DG.nodes[current_node].get('df_fac_attr')
                     # 只保留指定类型的设施记录
                     df_fac_filtered = df_fac_attr[df_fac_attr['fac_type'].isin(set_fac_types)]
+                    log.info(f"len df_fac_satisfied: {len(df_fac_filtered)}") if verbose else ''
                     
+                    log.info(f"df_fac_filtered empty check: {df_fac_filtered.empty}") if verbose else ''
                     if not df_fac_filtered.empty:
                         # 只使用过滤后的设施代码
                         set_fac_code = set(df_fac_filtered['fac_code'])
