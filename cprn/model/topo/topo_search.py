@@ -1,6 +1,6 @@
 # -*- coding : utf-8 -*-
 # create date : Apr 15th, 25
-# last update : Aug 12th, 25
+# last update : Sept11‘25
 # author : seika<seika@live.ca>
 
 """
@@ -10,13 +10,17 @@ moved from `taisl_sop`
 """
 
 
+import itertools
 import pandas as pd
 import networkx as nx
 
 from loguru import logger as log
 
+# from taisl_sop.util.decorators import deprecated
+
 from cprn.data.pickle import PickleIO
 from cprn.model.dict_query import DictQuery as dq
+
 
 class CprnTopoSearch:
         """  Roadrefline Network Analyzer
@@ -30,7 +34,7 @@ class CprnTopoSearch:
         
         @staticmethod
         def list_vtx_fac_df (DG: nx.DiGraph) -> pd.DataFrame:
-            """ list vertices of facility in dg as dataframe 
+            """ list vertices of facility in dg as dataframe (deprecated)
             """
             dct_nodes = dict(DG.nodes(data=True))
             dct_nodes_fac = {k: v for k, v in dct_nodes.items() if v}
@@ -42,7 +46,19 @@ class CprnTopoSearch:
             
             #df_nodes_fac = pd.DataFrame.from_dict(dct_nodes_fac, orient='index')
             return df_fac
-        
+
+        @staticmethod
+        def list_fac_df(DG: nx.DiGraph) -> pd.DataFrame:
+            """ list embeded facility in cprn(dg) as dataframe
+            """
+            # 过滤设施节点并提取lst_fac_attr
+            dct_nodes_fac = {k: v for k, v in DG.nodes(data=True) if v.get('is_fac', False)}
+            # 使用列表推导式提取所有lst_fac_attr，然后用chain展平
+            all_fac_records = list(itertools.chain.from_iterable(
+                attr.get('lst_fac_attr', []) for attr in dct_nodes_fac.values()))
+
+            return pd.DataFrame(all_fac_records)
+
         @staticmethod
         def list_fac_interval_df(lst_fac_traveled: list[dict]) -> pd.DataFrame:
             """ list facility interval (list of dict, searched by bfs) as dataframe
@@ -58,16 +74,16 @@ class CprnTopoSearch:
         def query_facility (DG: nx.DiGraph, fac_code: str) -> pd.DataFrame:
             """ query facility by facility code
             """
-            df_fac = CprnTopoSearch.list_vtx_fac_df(DG)
+            df_fac = CprnTopoSearch.list_fac_df(DG)
             return df_fac.query(f'fac_code == "{fac_code}"')
         
         @staticmethod
         def fac_bfs_depth(DG : nx.DiGraph, start_node: str, 
                           fac_types: list, direction: str, 
-                          max_depth: int = 3,
-                          max_dist: int = 1000000,
+                          max_depth: int = 3, max_dist: int = 1000000,
                           mark_max_dist: bool = False,
-                          query_avoid_edge: str = None,
+                          query_avoid_fac: list = None,
+                          query_avoid_edge: str = None, 
                           verbose: bool = False) -> list[dict]:
             """ Facility BFS with given depth limit
             Find all facility nodes of a specified type within a given depth from a start node.
@@ -235,13 +251,17 @@ class CprnTopoSearch:
 
             df_interval = pd.merge(
                 df_bfs_interval, df_fac_src,
-                left_on = 'vtx_intvl_src', right_on = 'gh_fac_rp_src',
+                left_on = 'vtx_intvl_src', 
+                # right_on = 'gh_fac_rp_src',
+                right_on = 'vtx_fac_src',
                 suffixes = ('', '_src'),
                 how = 'left')
 
             df_interval = pd.merge(
                 df_interval, df_fac_tgt,
-                left_on = 'vtx_intvl_tgt', right_on = 'gh_fac_rp_tgt',
+                left_on = 'vtx_intvl_tgt', 
+                # right_on = 'gh_fac_rp_tgt',
+                right_on = 'vtx_fac_tgt',
                 suffixes = ('', '_tgt'),
                 how = 'left')
 
@@ -294,3 +314,225 @@ class CprnTopoSearch:
             # df_res = df_interval[cols_order].copy()
 
             return df_interval
+
+# ------ Refactored Version (as of Sep15'25) ------
+
+        @staticmethod
+        def fac_bfs_depth_v2(DG : nx.DiGraph, start_node: str, 
+                          fac_types: list , direction: str, 
+                          max_depth: int = 3, max_dist: int = 1000000,
+                          mark_max_dist: bool = False,
+                          query_avoid_fac: list = None,
+                          query_avoid_edge: str = None, 
+                          verbose: bool = False) -> list[dict]:
+            """ Facility BFS with given depth limit
+            Find all facility nodes of a specified type within a given depth from a start node.
+            Return as list of dicts, that contains attributes of the found facility node    
+            Parameters:
+            - DG: networkx.DiGraph, the directed graph representing the highway network.
+            - start_node: node code (12 digits geohash), the starting facility node.
+            - fac_types: list of str, the type of facility to search for.
+            - direction: str, 'downstream' or 'upstream' to specify search direction.
+            - max_depth: int, the maximum depth to search.
+            - max_dist: int, the maximum distance to search.
+            - mark_max_dist: bool, whether to mark the maximum distance in result.
+            - query_avoid_edge: str, the query string to avoid traversing edge.
+            - verbose: bool, whether to print the search process.
+            Returns:
+            - List of dictionaries containing attributes of the found facility 
+                nodes, including depth and cumulative weight.
+            """
+                    
+            # Choose the appropriate traversal method based on direction
+            if direction == 'downstream':
+                func_neighb_search = DG.successors
+            elif direction == 'upstream':
+                func_neighb_search = DG.predecessors
+            else:
+                raise ValueError("Direction must be 'downstream' or 'upstream'.")
+        
+            # Initialize search
+            set_fac_types = set(fac_types)  # set of fac types to search for
+            set_fac_avoid = set(query_avoid_fac) if query_avoid_fac else set()
+            vtx_visited = set()
+            fac_visited = set()
+            
+            # Setup heap of queue : 
+            # current_node, current_fac, depth, interval_weight, cumulative_weight
+            queue = [(start_node, start_node, 0, 0, 0)]
+            lst_fac_found = []
+
+            # If start node is a suitable facility
+            if (set_fac_types.intersection(DG.nodes[start_node].get('fac_types', set()))):
+                lst_fac_attr_start = DG.nodes[start_node].get('lst_fac_attr', [])
+                lst_fac_start_fit = [fac for fac in lst_fac_attr_start if fac['fac_type'] in set_fac_types]
+
+                if set_fac_avoid:
+                    lst_fac_start_fit = [fac for fac in lst_fac_start_fit if fac['fac_code'] not in set_fac_avoid]
+                    if verbose:     # log facilities to avoid
+                        lst_fac_avoid = [fac for fac in lst_fac_start_fit if fac['fac_code'] in set_fac_avoid]
+                        log.info(f"Facilities to avoid: {lst_fac_avoid}") if len(lst_fac_avoid) > 0 else None
+
+                for fac in lst_fac_start_fit:
+                    dct_fac_traveled = {'depth': 0,  # Start depth is 0
+                        'vtx_intvl_src': start_node, 'vtx_intvl_tgt': start_node,
+                        'interval_weight': 0, 'cumulative_weight': 0, **fac,}
+                    lst_fac_found.append(dct_fac_traveled)
+                    fac_visited.add(fac['fac_code'])
+                queue = [(start_node, start_node, -1, 0, 0)]    # Update queue 😄
+                log.info(f"Start node {start_node} is a suitable facility, add as depth 0 😄") if verbose else None
+
+            # 开始遍历
+            while queue:
+                current_node, passed_fac_vtx, depth, interval_weight, cumulative_weight = queue.pop(0)
+                # Stop Criteria Check
+                if depth > max_depth:
+                    log.info(f"📛 Stop Criteria Activated: Max depth exceeds {max_depth}, stop searching at {current_node}") if verbose else None
+                    continue
+                if cumulative_weight > max_dist:
+                    log.info(f"📛 Stop Criteria Activated: Traverse distance exceeds {max_dist}, stop searching at {current_node}") if verbose else None
+                    if mark_max_dist:
+                        dct_final_vtx = {'depth': depth, 'vtx_intvl_src': passed_fac_vtx, 'vtx_intvl_tgt': current_node,
+                            'interval_weight': interval_weight, 'cumulative_weight': cumulative_weight,
+                            'reach_max_dist': True,}
+                        lst_fac_found.append(dct_final_vtx)
+                    continue
+
+                # Check if the current node is a target facility
+                if set_fac_types.intersection(DG.nodes[current_node].get('fac_types', set())):
+                    # log.info(f"traverse at {current_node} is a fac") if verbose else ''
+                    lst_fac_attr_ = DG.nodes[current_node].get('lst_fac_attr', [])
+                    lst_fac_attr_type_fit = [fac for fac in lst_fac_attr_ if fac['fac_type'] in set_fac_types]
+
+                    # filter out facilities to avoid
+                    if set_fac_avoid:
+                        if verbose:
+                            lst_fac_avoid = [fac for fac in lst_fac_attr_type_fit if fac['fac_code'] in set_fac_avoid]
+                            log.info(f"⛔️ Avoided Facilities: {lst_fac_avoid}") if len(lst_fac_avoid) > 0 else None
+                        lst_fac_attr_type_fit = [fac for fac in lst_fac_attr_type_fit if fac['fac_code'] not in set_fac_avoid]
+
+                    if len(lst_fac_attr_type_fit) != 1:
+                        log.info(f"⚠️ found irregular number {len(lst_fac_attr_type_fit)} of fac binded to vtx {current_node}") if verbose else None
+                    if lst_fac_attr_type_fit:
+                        depth += 1
+                        if depth > max_depth:
+                            log.info(f"📛 Stop Criteria Activated: Max depth exceeds {max_depth}, stop searching at {current_node}") if verbose else None
+                            continue
+
+                    for fac in lst_fac_attr_type_fit:
+                        if fac['fac_code'] not in fac_visited:
+                            log.info(f"🏰 Facility {fac['fac_code']} at vtx {current_node} found") if verbose else ''
+                            # prepare fac data for output
+                            dct_fac_traveled = {
+                                'depth': depth, 'vtx_intvl_src': passed_fac_vtx, 'vtx_intvl_tgt': current_node,
+                                'interval_weight': interval_weight, 'cumulative_weight': cumulative_weight,
+                                'reach_max_depth': depth >= max_depth,
+                                **fac}
+                            # append fac data to putput
+                            lst_fac_found.append(dct_fac_traveled)
+                            # update fac visited
+                            fac_visited.add(fac['fac_code'])
+                            passed_fac_vtx = current_node
+                            interval_weight = 0
+
+                        else:   # already visited
+                            log.info(f"🏰 Facility {fac['fac_code']} at vtx {current_node} found but already visited") if verbose else ''
+                            # necessary update
+                            # passed_fac_vtx = current_node
+                            # interval_weight = 0
+
+                # Add neighbors to the queue for iterative search
+                for neighbor in func_neighb_search(current_node):
+                    if neighbor not in vtx_visited:
+                        vtx_visited.add(neighbor)
+                        # Get the weight of the edge from current_node to neighbor
+                        if direction == 'downstream':
+                            dict_edge = DG[current_node][neighbor]
+                            edge_weight = DG[current_node][neighbor].get('weight', 1)  # Default weight is 1 if not specified
+                        elif direction == 'upstream':
+                            dict_edge = DG[neighbor][current_node]
+                            edge_weight = DG[neighbor][current_node].get('weight', 1)  # Default weight is 1 if not specified
+
+                        if query_avoid_edge:
+                            dq_edge = dq(dict_edge)
+                            if dq_edge.query(query_avoid_edge):
+                                if verbose:
+                                    log.info(f"🚫 Avoid Edge {current_node} -> {neighbor}, {dict_edge}")
+                                continue
+
+                        edge_weight = dict_edge.get('weight', 1)
+                        queue.append((neighbor, passed_fac_vtx, depth, 
+                                     interval_weight + edge_weight, 
+                                     cumulative_weight + edge_weight))  # Update cumulative weight
+            return lst_fac_found
+
+##        @staticmethod
+##        def parse_fac_interval_df_v3(lst_fac_topo: list[dict], start_node: str, 
+##                                    cols_fac_attr: list[str] = [
+##                                        'vtx_fac', 'fac_code', 'fac_type', 
+##                                        'fac_name', 'fac_ghz', 'rrl_id_hdm', 'rrl_id_osm'
+##                                    ]) -> pd.DataFrame:
+##            """ parse facility interval (list of dict, searched by fac_bfs_depth_v2) into dataframe
+##            
+##            Parameters:
+##            - lst_fac_topo: list of dict, facility topology results from fac_bfs_depth_v2
+##            - start_node: str, geohash code of starting node of the traversal
+##            - cols_fac_attr: list of str, columns to include from facility attributes
+##            Returns:
+##            - pd.DataFrame, DataFrame with columns describing facility intervals
+##            """
+##            
+##            if not lst_fac_topo:
+##                return pd.DataFrame()
+##            
+##            # 1. Create initial dataframe with basic columns
+##            df_bfs_interval = pd.DataFrame(lst_fac_topo)
+##            df_bfs_interval['vtx_start'] = start_node
+##            
+##            # 2. Extract facility information from the results (fac_bfs_depth_v2 already includes fac attributes)
+##            # Since fac_bfs_depth_v2 uses **fac to expand facility attributes, 
+##            # we can directly use the facility columns from the results
+##            
+##            # 3. Create source facility dataframe
+##            df_fac_src = df_bfs_interval[['vtx_intvl_src'] + cols_fac_attr].copy()
+##            df_fac_src = df_fac_src.add_suffix('_src')
+##            df_fac_src = df_fac_src.rename(columns={'vtx_intvl_src_src': 'vtx_intvl_src'})
+##            
+##            # 4. Create target facility dataframe  
+##            df_fac_tgt = df_bfs_interval[['vtx_intvl_tgt'] + cols_fac_attr].copy()
+##            df_fac_tgt = df_fac_tgt.add_suffix('_tgt')
+##            df_fac_tgt = df_fac_tgt.rename(columns={'vtx_intvl_tgt_tgt': 'vtx_intvl_tgt'})
+##            
+##            # 5. Merge with source facility information
+##            df_interval = pd.merge(
+##                df_bfs_interval, df_fac_src,
+##                left_on='vtx_intvl_src', 
+##                right_on='vtx_intvl_src',
+##                suffixes=('', '_src'),
+##                how='left'
+##            )
+##            
+##            # 6. Merge with target facility information
+##            df_interval = pd.merge(
+##                df_interval, df_fac_tgt,
+##                left_on='vtx_intvl_tgt', 
+##                right_on='vtx_intvl_tgt',
+##                suffixes=('', '_tgt'),
+##                how='left'
+##            )
+##            
+##            # 7. Select and reorder columns for better readability
+##            cols_order = [
+##                'vtx_start', 'vtx_intvl_src', 'vtx_intvl_tgt',
+##                'depth', 'interval_weight', 'cumulative_weight', 'reach_max_depth',
+##                'fac_code_src', 'fac_name_src', 'fac_type_src', 'fac_ghz_src',
+##                'fac_code_tgt', 'fac_name_tgt', 'fac_type_tgt', 'fac_ghz_tgt',
+##                'rrl_id_hdm_src', 'rrl_id_osm_src',
+##                'rrl_id_hdm_tgt', 'rrl_id_osm_tgt'
+##            ]
+##            
+##            # 8. Filter columns that exist in the dataframe
+##            existing_cols = [col for col in cols_order if col in df_interval.columns]
+##            df_result = df_interval[existing_cols].copy()
+##            
+##            return df_result
