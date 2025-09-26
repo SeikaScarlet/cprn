@@ -76,9 +76,162 @@ class CprnTopoSearch:
             """
             df_fac = CprnTopoSearch.list_fac_df(DG)
             return df_fac.query(f'fac_code == "{fac_code}"')
-        
+
         @staticmethod
-        def fac_bfs_depth(DG : nx.DiGraph, start_node: str, 
+        def parse_fac_interval_df(lst_fac_topo : list[dict], start_node: str, 
+                                cols_fac_attr: list[str] = [
+                                    'gh_fac_rp', 'fac_code', 'fac_type', 
+                                    'fac_name', 'geom_fac_wgs_3d']
+            ) -> pd.DataFrame:
+            """ parse facility interval (list of dict, searched by bfs) into dataframe
+            
+            Parameters:
+            - lst_fac_topo: list of dict, facility topology results (searched by bfs)
+            - start_node: str, geohash code of starting node of the traversal
+            Returns:
+            - pd.DataFrame, DataFrame with columns describing facility intervals
+            """
+
+            df_bfs_interval = pd.DataFrame(lst_fac_topo)
+            df_bfs_interval['vtx_start'] = start_node
+
+            df_fac_ = CprnTopoSearch.list_fac_interval_df(lst_fac_topo)
+            df_fac_ = df_fac_[cols_fac_attr]
+            df_fac_src = df_fac_.add_suffix('_src')
+            df_fac_tgt = df_fac_.add_suffix('_tgt')
+
+            df_interval = pd.merge(
+                df_bfs_interval, df_fac_src,
+                left_on = 'vtx_intvl_src', 
+                # right_on = 'gh_fac_rp_src',
+                right_on = 'vtx_fac_src',
+                suffixes = ('', '_src'),
+                how = 'left')
+
+            df_interval = pd.merge(
+                df_interval, df_fac_tgt,
+                left_on = 'vtx_intvl_tgt', 
+                # right_on = 'gh_fac_rp_tgt',
+                right_on = 'vtx_fac_tgt',
+                suffixes = ('', '_tgt'),
+                how = 'left')
+
+            return df_interval
+
+        @staticmethod
+        def parse_fac_interval_df_v2(lst_fac_topo: list[dict], start_node: str, DG: nx.DiGraph,
+                    cols_fac_attr: list[str] = ['gh_fac_rp', 'fac_code', 'fac_type', 
+                    'fac_name', 'geom_fac_wgs_3d'],) -> pd.DataFrame:
+            """ parse facility interval (list of dict, searched by bfs) into dataframe
+
+            Parameters:
+            - lst_fac_topo: list of dict, facility topology results (searched by bfs)
+            - start_node: str, geohash code of starting node of the traversal
+            Returns:
+            - pd.DataFrame, DataFrame with columns describing facility intervals
+            """
+            # 1. Create initial dataframe with basic columns
+            df_bfs_interval = pd.DataFrame(lst_fac_topo)
+            df_bfs_interval['vtx_start'] = start_node
+
+            # 2. Get facility dataframe more efficiently
+            df_fac_ = CprnTopoSearch.list_vtx_fac_df(DG)
+            df_fac_ = df_fac_[cols_fac_attr]
+            df_fac_src = df_fac_.add_suffix('_src')
+            df_fac_tgt = df_fac_.add_suffix('_tgt')
+
+            df_interval = pd.merge(
+                df_bfs_interval, df_fac_src,
+                left_on = 'vtx_intvl_src', right_on = 'gh_fac_rp_src',
+                suffixes = ('', '_src'),
+                how = 'left')
+
+            df_interval = pd.merge(
+                df_interval, df_fac_tgt,
+                left_on = 'vtx_intvl_tgt', right_on = 'gh_fac_rp_tgt',
+                suffixes = ('', '_tgt'),
+                how = 'left')
+
+            # 5. Select final columns in desired order
+            cols_order = [
+                'vtx_start', 'fac_vtx_src', 'fac_vtx_tgt',
+                'depth', 'interval_weight', 'cumulative_weight',
+                'fac_code_src', 'fac_name_src', 'fac_type_src', 'gh_fac_src',
+                'dist_fac_rp_src', 'fac_vtx_type_src',
+                'fac_code_tgt', 'fac_name_tgt', 'fac_type_tgt', 'gh_fac_tgt',
+                'dist_fac_rp_tgt', 'fac_vtx_type_tgt',]
+
+            # 6. Clean up memory by removing unnecessary columns
+            # df_res = df_interval[cols_order].copy()
+
+            return df_interval
+
+# ------ Refactored Version (as of Sep15'25) ------
+
+        @staticmethod
+        def fac_bfs_depth(DG: nx.DiGraph, start_node: str, 
+                      fac_types: list, direction: str, 
+                      max_depth: int = 3, max_dist: int = 1000000,
+                      mark_max_dist: bool = False,
+                      query_avoid_fac: list = None,
+                      query_avoid_edge: str = None, 
+                      edge_code_attr: str = 'edge_code',
+                      version: str = 'v2',
+                      verbose: bool = False,
+                      **kwargs) -> list[dict]:
+            """ Universal Facility BFS with intelligent parameter adaptation """
+            
+            # 版本函数映射
+            version_functions = {
+                'v1': CprnTopoSearch.fac_bfs_depth_v1,
+                'v2': CprnTopoSearch.fac_bfs_depth_v2,
+            }
+            
+            if version not in version_functions:
+                available_versions = list(version_functions.keys())
+                raise ValueError(f"Version '{version}' not supported. Available versions: {available_versions}")
+            
+            log.info(f"Using version {version} of `fac_bfs_depth`")
+            func = version_functions[version]
+            
+            # 获取函数的参数签名
+            import inspect
+            sig = inspect.signature(func)
+            func_params = set(sig.parameters.keys())
+            
+            # 准备所有可能的参数
+            all_params = {
+                'DG': DG,
+                'start_node': start_node,
+                'fac_types': fac_types,
+                'direction': direction,
+                'max_depth': max_depth,
+                'max_dist': max_dist,
+                'mark_max_dist': mark_max_dist,
+                'query_avoid_fac': query_avoid_fac,
+                'query_avoid_edge': query_avoid_edge,
+                'edge_code_attr': edge_code_attr,
+                'verbose': verbose,
+                **kwargs
+            }
+            
+            # 只传递函数支持的参数
+            filtered_params = {k: v for k, v in all_params.items() 
+                              if k in func_params}
+            
+            # 检查必需参数
+            required_params = {name for name, param in sig.parameters.items() 
+                              if param.default == inspect.Parameter.empty}
+            missing_params = required_params - set(filtered_params.keys())
+            
+            if missing_params:
+                raise TypeError(f"Missing required parameters for {version}: {missing_params}")
+            
+            return func(**filtered_params)
+
+
+        @staticmethod
+        def fac_bfs_depth_v1(DG : nx.DiGraph, start_node: str, 
                           fac_types: list, direction: str, 
                           max_depth: int = 3, max_dist: int = 1000000,
                           mark_max_dist: bool = False,
@@ -226,96 +379,6 @@ class CprnTopoSearch:
 
             return lst_fac_found
 
-        @staticmethod
-        def parse_fac_interval_df(lst_fac_topo : list[dict], start_node: str, 
-                                cols_fac_attr: list[str] = [
-                                    'gh_fac_rp', 'fac_code', 'fac_type', 
-                                    'fac_name', 'geom_fac_wgs_3d']
-            ) -> pd.DataFrame:
-            """ parse facility interval (list of dict, searched by bfs) into dataframe
-            
-            Parameters:
-            - lst_fac_topo: list of dict, facility topology results (searched by bfs)
-            - start_node: str, geohash code of starting node of the traversal
-            Returns:
-            - pd.DataFrame, DataFrame with columns describing facility intervals
-            """
-
-            df_bfs_interval = pd.DataFrame(lst_fac_topo)
-            df_bfs_interval['vtx_start'] = start_node
-
-            df_fac_ = CprnTopoSearch.list_fac_interval_df(lst_fac_topo)
-            df_fac_ = df_fac_[cols_fac_attr]
-            df_fac_src = df_fac_.add_suffix('_src')
-            df_fac_tgt = df_fac_.add_suffix('_tgt')
-
-            df_interval = pd.merge(
-                df_bfs_interval, df_fac_src,
-                left_on = 'vtx_intvl_src', 
-                # right_on = 'gh_fac_rp_src',
-                right_on = 'vtx_fac_src',
-                suffixes = ('', '_src'),
-                how = 'left')
-
-            df_interval = pd.merge(
-                df_interval, df_fac_tgt,
-                left_on = 'vtx_intvl_tgt', 
-                # right_on = 'gh_fac_rp_tgt',
-                right_on = 'vtx_fac_tgt',
-                suffixes = ('', '_tgt'),
-                how = 'left')
-
-            return df_interval
-
-        @staticmethod
-        def parse_fac_interval_df_v2(lst_fac_topo: list[dict], start_node: str, DG: nx.DiGraph,
-                    cols_fac_attr: list[str] = ['gh_fac_rp', 'fac_code', 'fac_type', 
-                    'fac_name', 'geom_fac_wgs_3d'],) -> pd.DataFrame:
-            """ parse facility interval (list of dict, searched by bfs) into dataframe
-
-            Parameters:
-            - lst_fac_topo: list of dict, facility topology results (searched by bfs)
-            - start_node: str, geohash code of starting node of the traversal
-            Returns:
-            - pd.DataFrame, DataFrame with columns describing facility intervals
-            """
-            # 1. Create initial dataframe with basic columns
-            df_bfs_interval = pd.DataFrame(lst_fac_topo)
-            df_bfs_interval['vtx_start'] = start_node
-
-            # 2. Get facility dataframe more efficiently
-            df_fac_ = CprnTopoSearch.list_vtx_fac_df(DG)
-            df_fac_ = df_fac_[cols_fac_attr]
-            df_fac_src = df_fac_.add_suffix('_src')
-            df_fac_tgt = df_fac_.add_suffix('_tgt')
-
-            df_interval = pd.merge(
-                df_bfs_interval, df_fac_src,
-                left_on = 'vtx_intvl_src', right_on = 'gh_fac_rp_src',
-                suffixes = ('', '_src'),
-                how = 'left')
-
-            df_interval = pd.merge(
-                df_interval, df_fac_tgt,
-                left_on = 'vtx_intvl_tgt', right_on = 'gh_fac_rp_tgt',
-                suffixes = ('', '_tgt'),
-                how = 'left')
-
-            # 5. Select final columns in desired order
-            cols_order = [
-                'vtx_start', 'fac_vtx_src', 'fac_vtx_tgt',
-                'depth', 'interval_weight', 'cumulative_weight',
-                'fac_code_src', 'fac_name_src', 'fac_type_src', 'gh_fac_src',
-                'dist_fac_rp_src', 'fac_vtx_type_src',
-                'fac_code_tgt', 'fac_name_tgt', 'fac_type_tgt', 'gh_fac_tgt',
-                'dist_fac_rp_tgt', 'fac_vtx_type_tgt',]
-
-            # 6. Clean up memory by removing unnecessary columns
-            # df_res = df_interval[cols_order].copy()
-
-            return df_interval
-
-# ------ Refactored Version (as of Sep15'25) ------
 
         @staticmethod
         def fac_bfs_depth_v2(DG : nx.DiGraph, start_node: str, 
@@ -324,25 +387,26 @@ class CprnTopoSearch:
                           mark_max_dist: bool = False,
                           query_avoid_fac: list = None,
                           query_avoid_edge: str = None, 
+                          edge_code_attr: str = 'edge_code', # 边编号列名
                           verbose: bool = False) -> list[dict]:
             """ Facility BFS with given depth limit
             Find all facility nodes of a specified type within a given depth from a start node.
             Return as list of dicts, that contains attributes of the found facility node    
             Parameters:
-            - DG: networkx.DiGraph, the directed graph representing the highway network.
-            - start_node: node code (12 digits geohash), the starting facility node.
-            - fac_types: list of str, the type of facility to search for.
-            - direction: str, 'downstream' or 'upstream' to specify search direction.
-            - max_depth: int, the maximum depth to search.
-            - max_dist: int, the maximum distance to search.
-            - mark_max_dist: bool, whether to mark the maximum distance in result.
-            - query_avoid_edge: str, the query string to avoid traversing edge.
-            - verbose: bool, whether to print the search process.
-            Returns:
-            - List of dictionaries containing attributes of the found facility 
-                nodes, including depth and cumulative weight.
+                - DG: networkx.DiGraph, the directed graph representing the highway network.
+                - start_node: node code (12 digits geohash), the starting facility node.
+                - fac_types: list of str, the type of facility to search for.
+                - direction: str, 'downstream' or 'upstream' to specify search direction.
+                - max_depth: int, the maximum depth to search.
+                - max_dist: int, the maximum distance to search.
+                - mark_max_dist: bool, whether to mark the maximum distance in result.
+                - query_avoid_edge: str, the query string to avoid traversing edge.
+                - verbose: bool, whether to print the search process.
+                Returns:
+                - List of dictionaries containing attributes of the found facility 
+                    nodes, including depth and cumulative weight.
             """
-                    
+
             # Choose the appropriate traversal method based on direction
             if direction == 'downstream':
                 func_neighb_search = DG.successors
@@ -350,16 +414,16 @@ class CprnTopoSearch:
                 func_neighb_search = DG.predecessors
             else:
                 raise ValueError("Direction must be 'downstream' or 'upstream'.")
-        
+
             # Initialize search
             set_fac_types = set(fac_types)  # set of fac types to search for
             set_fac_avoid = set(query_avoid_fac) if query_avoid_fac else set()
             vtx_visited = set()
             fac_visited = set()
-            
+
             # Setup heap of queue : 
-            # current_node, current_fac, depth, interval_weight, cumulative_weight
-            queue = [(start_node, start_node, 0, 0, 0)]
+            # current_node, current_fac, depth, interval_weight, cumulative_weight, interval_edges, cumulative_edges
+            queue = [(start_node, start_node, 0, 0, 0, [], [])]
             lst_fac_found = []
 
             # If start node is a suitable facility
@@ -376,15 +440,16 @@ class CprnTopoSearch:
                 for fac in lst_fac_start_fit:
                     dct_fac_traveled = {'depth': 0,  # Start depth is 0
                         'vtx_intvl_src': start_node, 'vtx_intvl_tgt': start_node,
-                        'interval_weight': 0, 'cumulative_weight': 0, **fac,}
+                        'interval_weight': 0, 'cumulative_weight': 0, 
+                        'interval_edges': [], 'cumulative_edges': [], **fac,}
                     lst_fac_found.append(dct_fac_traveled)
                     fac_visited.add(fac['fac_code'])
-                queue = [(start_node, start_node, -1, 0, 0)]    # Update queue 😄
+                queue = [(start_node, start_node, -1, 0, 0, [], [])]    # Update queue 😄
                 log.info(f"Start node {start_node} is a suitable facility, add as depth 0 😄") if verbose else None
 
             # 开始遍历
             while queue:
-                current_node, passed_fac_vtx, depth, interval_weight, cumulative_weight = queue.pop(0)
+                current_node, passed_fac_vtx, depth, interval_weight, cumulative_weight, interval_edges, cumulative_edges = queue.pop(0)
                 # Stop Criteria Check
                 if depth > max_depth:
                     log.info(f"📛 Stop Criteria Activated: Max depth exceeds {max_depth}, stop searching at {current_node}") if verbose else None
@@ -394,6 +459,7 @@ class CprnTopoSearch:
                     if mark_max_dist:
                         dct_final_vtx = {'depth': depth, 'vtx_intvl_src': passed_fac_vtx, 'vtx_intvl_tgt': current_node,
                             'interval_weight': interval_weight, 'cumulative_weight': cumulative_weight,
+                            'interval_edges': interval_edges, 'cumulative_edges': cumulative_edges,
                             'reach_max_dist': True,}
                         lst_fac_found.append(dct_final_vtx)
                     continue
@@ -426,6 +492,7 @@ class CprnTopoSearch:
                             dct_fac_traveled = {
                                 'depth': depth, 'vtx_intvl_src': passed_fac_vtx, 'vtx_intvl_tgt': current_node,
                                 'interval_weight': interval_weight, 'cumulative_weight': cumulative_weight,
+                                'interval_edges': interval_edges, 'cumulative_edges': cumulative_edges,
                                 'reach_max_depth': depth >= max_depth,
                                 **fac}
                             # append fac data to putput
@@ -434,6 +501,7 @@ class CprnTopoSearch:
                             fac_visited.add(fac['fac_code'])
                             passed_fac_vtx = current_node
                             interval_weight = 0
+                            interval_edges = []
 
                         else:   # already visited
                             log.info(f"🏰 Facility {fac['fac_code']} at vtx {current_node} found but already visited") if verbose else ''
@@ -461,78 +529,18 @@ class CprnTopoSearch:
                                 continue
 
                         edge_weight = dict_edge.get('weight', 1)
+                        current_edge_code = dict_edge.get(edge_code_attr, None) # 获取当前边编号
+                        
+                         # 创建新的边列表
+                        new_interval_edges = interval_edges.copy()
+                        new_cumulative_edges = cumulative_edges.copy()
+                        if current_edge_code is not None:
+                            new_interval_edges.append(current_edge_code)
+                            new_cumulative_edges.append(current_edge_code)
+
                         queue.append((neighbor, passed_fac_vtx, depth, 
                                      interval_weight + edge_weight, 
-                                     cumulative_weight + edge_weight))  # Update cumulative weight
+                                     cumulative_weight + edge_weight,
+                                     new_interval_edges,
+                                     new_cumulative_edges))  # Update cumulative weight
             return lst_fac_found
-
-##        @staticmethod
-##        def parse_fac_interval_df_v3(lst_fac_topo: list[dict], start_node: str, 
-##                                    cols_fac_attr: list[str] = [
-##                                        'vtx_fac', 'fac_code', 'fac_type', 
-##                                        'fac_name', 'fac_ghz', 'rrl_id_hdm', 'rrl_id_osm'
-##                                    ]) -> pd.DataFrame:
-##            """ parse facility interval (list of dict, searched by fac_bfs_depth_v2) into dataframe
-##            
-##            Parameters:
-##            - lst_fac_topo: list of dict, facility topology results from fac_bfs_depth_v2
-##            - start_node: str, geohash code of starting node of the traversal
-##            - cols_fac_attr: list of str, columns to include from facility attributes
-##            Returns:
-##            - pd.DataFrame, DataFrame with columns describing facility intervals
-##            """
-##            
-##            if not lst_fac_topo:
-##                return pd.DataFrame()
-##            
-##            # 1. Create initial dataframe with basic columns
-##            df_bfs_interval = pd.DataFrame(lst_fac_topo)
-##            df_bfs_interval['vtx_start'] = start_node
-##            
-##            # 2. Extract facility information from the results (fac_bfs_depth_v2 already includes fac attributes)
-##            # Since fac_bfs_depth_v2 uses **fac to expand facility attributes, 
-##            # we can directly use the facility columns from the results
-##            
-##            # 3. Create source facility dataframe
-##            df_fac_src = df_bfs_interval[['vtx_intvl_src'] + cols_fac_attr].copy()
-##            df_fac_src = df_fac_src.add_suffix('_src')
-##            df_fac_src = df_fac_src.rename(columns={'vtx_intvl_src_src': 'vtx_intvl_src'})
-##            
-##            # 4. Create target facility dataframe  
-##            df_fac_tgt = df_bfs_interval[['vtx_intvl_tgt'] + cols_fac_attr].copy()
-##            df_fac_tgt = df_fac_tgt.add_suffix('_tgt')
-##            df_fac_tgt = df_fac_tgt.rename(columns={'vtx_intvl_tgt_tgt': 'vtx_intvl_tgt'})
-##            
-##            # 5. Merge with source facility information
-##            df_interval = pd.merge(
-##                df_bfs_interval, df_fac_src,
-##                left_on='vtx_intvl_src', 
-##                right_on='vtx_intvl_src',
-##                suffixes=('', '_src'),
-##                how='left'
-##            )
-##            
-##            # 6. Merge with target facility information
-##            df_interval = pd.merge(
-##                df_interval, df_fac_tgt,
-##                left_on='vtx_intvl_tgt', 
-##                right_on='vtx_intvl_tgt',
-##                suffixes=('', '_tgt'),
-##                how='left'
-##            )
-##            
-##            # 7. Select and reorder columns for better readability
-##            cols_order = [
-##                'vtx_start', 'vtx_intvl_src', 'vtx_intvl_tgt',
-##                'depth', 'interval_weight', 'cumulative_weight', 'reach_max_depth',
-##                'fac_code_src', 'fac_name_src', 'fac_type_src', 'fac_ghz_src',
-##                'fac_code_tgt', 'fac_name_tgt', 'fac_type_tgt', 'fac_ghz_tgt',
-##                'rrl_id_hdm_src', 'rrl_id_osm_src',
-##                'rrl_id_hdm_tgt', 'rrl_id_osm_tgt'
-##            ]
-##            
-##            # 8. Filter columns that exist in the dataframe
-##            existing_cols = [col for col in cols_order if col in df_interval.columns]
-##            df_result = df_interval[existing_cols].copy()
-##            
-##            return df_result
