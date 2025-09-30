@@ -186,14 +186,14 @@ class CprnTopoSearch:
                 'v1': CprnTopoSearch.fac_bfs_depth_v1,
                 'v2': CprnTopoSearch.fac_bfs_depth_v2,
             }
-            
+
             if version not in version_functions:
                 available_versions = list(version_functions.keys())
                 raise ValueError(f"Version '{version}' not supported. Available versions: {available_versions}")
-            
-            log.info(f"Using version {version} of `fac_bfs_depth`")
+
+            log.info(f"Using version {version} of `fac_bfs_depth`") if verbose else None
             func = version_functions[version]
-            
+
             # 获取函数的参数签名
             import inspect
             sig = inspect.signature(func)
@@ -212,8 +212,7 @@ class CprnTopoSearch:
                 'query_avoid_edge': query_avoid_edge,
                 'edge_code_attr': edge_code_attr,
                 'verbose': verbose,
-                **kwargs
-            }
+                **kwargs}
             
             # 只传递函数支持的参数
             filtered_params = {k: v for k, v in all_params.items() 
