@@ -45,6 +45,3 @@ venv/
 x_*.*
 X_*.*
 x.*
-
-# PDCA work documents (not tracked by git)
-doc/pdca/
