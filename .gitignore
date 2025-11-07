@@ -46,5 +46,5 @@ x_*.*
 X_*.*
 x.*
 
-# Exceptions: Work documents that should be tracked
-!doc/x_CPRN_*_works.md
+# PDCA work documents (not tracked by git)
+doc/pdca/
